@@ -2,7 +2,7 @@
   <link name="block">
     <inertial>
       <origin xyz="0.025 0.025 0.025" />
-      <mass value="2.26796" />
+      <mass value="1.13398" />
       <inertia  ixx="0.0009449833" ixy="0.0"  ixz="0.0"  iyy="0.0009449833"  iyz="0.0"  izz="0.0009449833" />
     </inertial>
     <visual>
