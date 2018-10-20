@@ -1,30 +1,44 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2015-2018, Rethink Robotics Inc.
+# Copyright (c) 2013-2015, Rethink Robotics
+# All rights reserved.
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the Rethink Robotics nor the names of its
+#    contributors may be used to endorse or promote products derived from
+#    this software without specific prior written permission.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 
 """
-Sawyer SDK Inverse Kinematics Pick and Place Demo
+Baxter RSDK Inverse Kinematics Pick and Place Demo
 """
 import argparse
 import struct
 import sys
 import copy
 import os
+import subprocess, signal
+
 import rospy
 import rospkg
-import subprocess, signal
 
 from gazebo_msgs.srv import (
     SpawnModel,
@@ -36,19 +50,31 @@ from geometry_msgs.msg import (
     Point,
     Quaternion,
 )
+from std_msgs.msg import (
+    Header,
+    Empty,
+)
 
-import intera_interface
+from baxter_core_msgs.srv import (
+    SolvePositionIK,
+    SolvePositionIKRequest,
+)
 
-class PickAndPlace(object):
-    def __init__(self, limb="right", hover_distance = 0.15, tip_name="right_gripper_tip"):
+import baxter_interface
+
+class PushMass(object):
+    def __init__(self, limb, hover_distance = 0.2, verbose=True):
         self._limb_name = limb # string
-        self._tip_name = tip_name # string
         self._hover_distance = hover_distance # in meters
-        self._limb = intera_interface.Limb(limb)
-        self._gripper = intera_interface.Gripper()
+        self._verbose = verbose # bool
+        self._limb = baxter_interface.Limb(limb)
+        self._gripper = baxter_interface.Gripper(limb)
+        ns = "ExternalTools/" + limb + "/PositionKinematicsNode/IKService"
+        self._iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
+        rospy.wait_for_service(ns, 5.0)
         # verify robot is enabled
         print("Getting robot state... ")
-        self._rs = intera_interface.RobotEnable(intera_interface.CHECK_VERSION)
+        self._rs = baxter_interface.RobotEnable(baxter_interface.CHECK_VERSION)
         self._init_state = self._rs.state().enabled
         print("Enabling robot... ")
         self._rs.enable()
@@ -59,12 +85,44 @@ class PickAndPlace(object):
             start_angles = dict(zip(self._joint_names, [0]*7))
         self._guarded_move_to_joint_position(start_angles)
         self.gripper_open()
+        rospy.sleep(1.0)
+        print("Running. Ctrl-c to quit")
 
-    def _guarded_move_to_joint_position(self, joint_angles, timeout=5.0):
-        if rospy.is_shutdown():
-            return
+    def ik_request(self, pose):
+        hdr = Header(stamp=rospy.Time.now(), frame_id='base')
+        ikreq = SolvePositionIKRequest()
+        ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=pose))
+        try:
+            resp = self._iksvc(ikreq)
+        except (rospy.ServiceException, rospy.ROSException), e:
+            rospy.logerr("Service call failed: %s" % (e,))
+            return False
+        # Check if result valid, and type of seed ultimately used to get solution
+        # convert rospy's string representation of uint8[]'s to int's
+        resp_seeds = struct.unpack('<%dB' % len(resp.result_type), resp.result_type)
+        limb_joints = {}
+        if (resp_seeds[0] != resp.RESULT_INVALID):
+            seed_str = {
+                        ikreq.SEED_USER: 'User Provided Seed',
+                        ikreq.SEED_CURRENT: 'Current Joint Angles',
+                        ikreq.SEED_NS_MAP: 'Nullspace Setpoints',
+                       }.get(resp_seeds[0], 'None')
+            if self._verbose:
+                print("IK Solution SUCCESS - Valid Joint Solution Found from Seed Type: {0}".format(
+                         (seed_str)))
+            # Format solution into Limb API-compatible dictionary
+            limb_joints = dict(zip(resp.joints[0].name, resp.joints[0].position))
+            if self._verbose:
+                print("IK Joint Solution:\n{0}".format(limb_joints))
+                print("------------------")
+        else:
+            rospy.logerr("INVALID POSE - No Valid Joint Solution Found.")
+            return False
+        return limb_joints
+
+    def _guarded_move_to_joint_position(self, joint_angles):
         if joint_angles:
-            self._limb.move_to_joint_positions(joint_angles,timeout=timeout)
+            self._limb.move_to_joint_positions(joint_angles)
         else:
             rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
 
@@ -79,86 +137,55 @@ class PickAndPlace(object):
     def _approach(self, pose):
         approach = copy.deepcopy(pose)
         # approach with a pose the hover-distance above the requested pose
-        approach.position.z = approach.position.z + self._hover_distance
-        joint_angles = self._limb.ik_request(approach, self._tip_name)
-        self._limb.set_joint_position_speed(0.001)
+        approach.position.y = approach.position.y + self._hover_distance
+        joint_angles = self.ik_request(approach)
         self._guarded_move_to_joint_position(joint_angles)
-        self._limb.set_joint_position_speed(0.1)
-
+        
+    def _push(self, pose,rosbag_process):
+        approach = copy.deepcopy(pose)
+        # approach with a pose the hover-distance above the requested pose
+        approach.position.y = approach.position.y + -0.04
+        joint_angles = self.ik_request(approach)
+        self._guarded_move_to_joint_position(joint_angles)
+        stop_rosbag_recording(rosbag_process)
+        delete_gazebo_block()
+            
     def _retract(self):
         # retrieve current pose from endpoint
         current_pose = self._limb.endpoint_pose()
         ik_pose = Pose()
-        ik_pose.position.x = current_pose['position'].x
-        ik_pose.position.y = current_pose['position'].y
-        ik_pose.position.z = current_pose['position'].z + self._hover_distance
-        ik_pose.orientation.x = current_pose['orientation'].x
-        ik_pose.orientation.y = current_pose['orientation'].y
-        ik_pose.orientation.z = current_pose['orientation'].z
+        ik_pose.position.x = current_pose['position'].x 
+        ik_pose.position.y = current_pose['position'].y + self._hover_distance
+        ik_pose.position.z = current_pose['position'].z 
+        ik_pose.orientation.x = current_pose['orientation'].x 
+        ik_pose.orientation.y = current_pose['orientation'].y 
+        ik_pose.orientation.z = current_pose['orientation'].z 
         ik_pose.orientation.w = current_pose['orientation'].w
-        self._servo_to_pose(ik_pose)
+        joint_angles = self.ik_request(ik_pose)
+        # servo up from current pose
+        self._guarded_move_to_joint_position(joint_angles)
 
-    def _servo_to_pose(self, pose, time=4.0, steps=400.0):
-        ''' An *incredibly simple* linearly-interpolated Cartesian move '''
-        r = rospy.Rate(1/(time/steps)) # Defaults to 100Hz command rate
-        current_pose = self._limb.endpoint_pose()
-        ik_delta = Pose()
-        ik_delta.position.x = (current_pose['position'].x - pose.position.x) / steps
-        ik_delta.position.y = (current_pose['position'].y - pose.position.y) / steps
-        ik_delta.position.z = (current_pose['position'].z - pose.position.z) / steps
-        ik_delta.orientation.x = (current_pose['orientation'].x - pose.orientation.x) / steps
-        ik_delta.orientation.y = (current_pose['orientation'].y - pose.orientation.y) / steps
-        ik_delta.orientation.z = (current_pose['orientation'].z - pose.orientation.z) / steps
-        ik_delta.orientation.w = (current_pose['orientation'].w - pose.orientation.w) / steps
-        for d in range(int(steps), -1, -1):
-            if rospy.is_shutdown():
-                return
-            ik_step = Pose()
-            ik_step.position.x = d*ik_delta.position.x + pose.position.x
-            ik_step.position.y = d*ik_delta.position.y + pose.position.y
-            ik_step.position.z = d*ik_delta.position.z + pose.position.z
-            ik_step.orientation.x = d*ik_delta.orientation.x + pose.orientation.x
-            ik_step.orientation.y = d*ik_delta.orientation.y + pose.orientation.y
-            ik_step.orientation.z = d*ik_delta.orientation.z + pose.orientation.z
-            ik_step.orientation.w = d*ik_delta.orientation.w + pose.orientation.w
-            joint_angles = self._limb.ik_request(ik_step, self._tip_name)
-            if joint_angles:
-                self._limb.set_joint_positions(joint_angles)
-            else:
-                rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
-            r.sleep()
-        rospy.sleep(1.0)
+    def _servo_to_pose(self, pose):
+        # servo down to release
+        joint_angles = self.ik_request(pose)
+        self._guarded_move_to_joint_position(joint_angles)
 
-    def pick(self, pose, filename):
-        # open the gripper
-        self.gripper_open()
+    def reach(self, pose, filename):
+        # close the gripper
+        self.gripper_close()
         # servo above pose
         self._approach(pose)
         # servo to pose
         self._servo_to_pose(pose)
-        # close gripper
-        self.gripper_close()
         #start to record
         rosbag_process = start_rosbag_recording(filename)
-        self._approach(pose)
-        return rosbag_process
+        self._push(pose, rosbag_process)
     
-    def place(self, pose, rosbag_process):
-        # servo above pose
-        self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        # open the gripper
-        self.gripper_open()
-        # stop rosbag recording
-        stop_rosbag_recording(rosbag_process)
-        self._approach(pose)
-
-def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
+      
+def load_gazebo_models(table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
                        table_reference_frame="world",
                        block_pose=Pose(position=Point(x=0.4225, y=0.1265, z=0.7725)),
                        block_reference_frame="world"):
-    
     # Get Models' Path
     script_path = os.path.dirname(os.path.abspath(__file__)) 
     model_path = script_path[:-8]+"/models/"
@@ -167,12 +194,14 @@ def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0,
     table_xml = ''
     with open (model_path + "cafe_table/model.sdf", "r") as table_file:
         table_xml=table_file.read().replace('\n', '')
-    # Load Block URDF
+    
+    # Load Blocks URDF
     block_xml = ''
     block_path = "block/model"+ str(box_no) + ".urdf"
     with open (model_path + block_path, "r") as block_file:
         block_xml=block_file.read().replace('\n', '')
-    # Spawn Table SDF
+  
+   # Spawn Table SDF
     rospy.wait_for_service('/gazebo/spawn_sdf_model')
     try:
         spawn_sdf = rospy.ServiceProxy('/gazebo/spawn_sdf_model', SpawnModel)
@@ -180,7 +209,8 @@ def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0,
                              table_pose, table_reference_frame)
     except rospy.ServiceException, e:
         rospy.logerr("Spawn SDF service call failed: {0}".format(e))
-    # Spawn Block URDF
+   
+   # Spawn Block URDF
     rospy.wait_for_service('/gazebo/spawn_urdf_model')
     try:
         spawn_urdf = rospy.ServiceProxy('/gazebo/spawn_urdf_model', SpawnModel)
@@ -199,7 +229,7 @@ def delete_gazebo_models():
         resp_delete = delete_model("cafe_table")
         resp_delete = delete_model("block")
     except rospy.ServiceException, e:
-        print("Delete Model service call failed: {0}".format(e))
+        rospy.loginfo("Delete Model service call failed: {0}".format(e))
 
 def load_gazebo_block(box_no = 4, block_pose=Pose(position=Point(x=0.4225, y=0.1265, z=0.7725)),
                        block_reference_frame="world"):
@@ -255,9 +285,8 @@ def stop_rosbag_recording(p):
     p.wait()  # we wait for children to terminate
     
     rospy.loginfo("I'm done")
-    
 def main():
-    """SDK Inverse Kinematics Pick and Place Example
+    """RSDK Inverse Kinematics Pick and Place Example
 
     A Pick and Place example using the Rethink Inverse Kinematics
     Service which returns the joint angles a requested Cartesian Pose.
@@ -266,15 +295,15 @@ def main():
 
     Note: This is a highly scripted and tuned demo. The object location
     is "known" and movement is done completely open loop. It is expected
-    behavior that Sawyer will eventually mis-pick or drop the block. You
+    behavior that Baxter will eventually mis-pick or drop the block. You
     can improve on this demo by adding perception and feedback to close
     the loop.
     """
-    rospy.init_node("pick_and_place_tufts")
+    rospy.init_node("push_different_mass")
     
     #parse argument
     myargv = rospy.myargv(argv=sys.argv)
-    filename = "sawyer_pick_and_place__model"+ str(myargv[1])+"_"
+    filename = "sawyer_push_different_mass__model"+ str(myargv[1])+"_"
     num_of_run = int(myargv[2])
     
     # Load Gazebo Models via Spawning Services
@@ -284,40 +313,41 @@ def main():
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
 
+    # Wait for the All Clear from emulator startup
+    rospy.wait_for_message("/robot/sim/started", Empty)
+
     limb = 'right'
-    hover_distance = 0.07 # meters
-    # Starting Joint angles for right arm
-    starting_joint_angles = {'right_j0': -0.041662954890248294,
+    hover_distance = 0.15 # meters
+    # Starting Joint angles for left arm
+   starting_joint_angles = {'right_j0': -0.041662954890248294,
                              'right_j1': -1.0258291091425074,
                              'right_j2': 0.0293680414401436,
                              'right_j3': 2.17518162913313,
                              'right_j4':  -0.06703022873354225,
                              'right_j5': 0.3968371433926965,
                              'right_j6': 1.7659649178699421}
-    
-    pnp = PickAndPlace(limb, hover_distance)
+    pnp = PushMass(limb, hover_distance)
     # An orientation for gripper fingers to be overhead and parallel to the obj
-    overhead_orientation = Quaternion(
+   overhead_orientation = Quaternion(
                              x=-0.00142460053167,
                              y=0.999994209902,
                              z=-0.00177030764765,
                              w=0.00253311793936)
-  
+    
     block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
   
     pnp.move_to_start(starting_joint_angles)
     
     for x in range(0,num_of_run):
         if(not rospy.is_shutdown()):
-           rosbag_process =  pnp.pick(block_pose, filename)
-           pnp.place(block_pose, rosbag_process)
-           pnp.gripper_open()
-           pnp.move_to_start(starting_joint_angles)
-           delete_gazebo_block()
-           load_gazebo_block(myargv[1])
+            pnp.reach(block_pose, filename)
+            pnp.move_to_start(starting_joint_angles)
+            load_gazebo_block(myargv[1])
+            
         else:
             break
-   
+    
+    pnp.move_to_start(starting_joint_angles)
     return 0
 
 if __name__ == '__main__':
