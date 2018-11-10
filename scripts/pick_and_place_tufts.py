@@ -280,10 +280,7 @@ def main():
     # Load Gazebo Models via Spawning Services
     # Note that the models reference is the /world frame
     # and the IK operates with respect to the /base frame
-    load_gazebo_models(myargv[1])
-    # Remove models from the scene on shutdown
-    rospy.on_shutdown(delete_gazebo_models)
-
+    
     limb = 'right'
     hover_distance = 0.07 # meters
     # Starting Joint angles for right arm
@@ -306,6 +303,10 @@ def main():
     block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
   
     pnp.move_to_start(starting_joint_angles)
+    
+    load_gazebo_models(myargv[1])
+    # Remove models from the scene on shutdown
+    rospy.on_shutdown(delete_gazebo_models)
     
     for x in range(0,num_of_run):
         if(not rospy.is_shutdown()):

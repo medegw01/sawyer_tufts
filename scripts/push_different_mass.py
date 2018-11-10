@@ -50,81 +50,67 @@ from geometry_msgs.msg import (
     Point,
     Quaternion,
 )
-from std_msgs.msg import (
-    Header,
-    Empty,
-)
 
-from baxter_core_msgs.srv import (
-    SolvePositionIK,
-    SolvePositionIKRequest,
-)
-
-import baxter_interface
+import intera_interface
 
 class PushMass(object):
-    def __init__(self, limb, hover_distance = 0.2, verbose=True):
+    def __init__(self, limb="right", hover_distance = 0.15 , tip_name="right_gripper_tip"):
         self._limb_name = limb # string
+        self._tip_name = tip_name # string
         self._hover_distance = hover_distance # in meters
-        self._verbose = verbose # bool
-        self._limb = baxter_interface.Limb(limb)
-        self._gripper = baxter_interface.Gripper(limb)
-        ns = "ExternalTools/" + limb + "/PositionKinematicsNode/IKService"
-        self._iksvc = rospy.ServiceProxy(ns, SolvePositionIK)
-        rospy.wait_for_service(ns, 5.0)
+        self._limb = intera_interface.Limb(limb)
+        self._gripper = intera_interface.Gripper()
         # verify robot is enabled
         print("Getting robot state... ")
-        self._rs = baxter_interface.RobotEnable(baxter_interface.CHECK_VERSION)
+        self._rs = intera_interface.RobotEnable(intera_interface.CHECK_VERSION)
         self._init_state = self._rs.state().enabled
         print("Enabling robot... ")
         self._rs.enable()
-
+        
     def move_to_start(self, start_angles=None):
         print("Moving the {0} arm to start pose...".format(self._limb_name))
         if not start_angles:
             start_angles = dict(zip(self._joint_names, [0]*7))
         self._guarded_move_to_joint_position(start_angles)
         self.gripper_open()
+    def _guarded_move_to_joint_position(self, joint_angles, timeout=5.0):
+		if rospy.is_shutdown():
+			return
+		if joint_angles:
+			self._limb.move_to_joint_positions(joint_angles,timeout=timeout)
+		else:
+			rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
+    
+    def _servo_to_pose(self, pose, time=4.0, steps=400.0):
+        ''' An *incredibly simple* linearly-interpolated Cartesian move '''
+        r = rospy.Rate(1/(time/steps)) # Defaults to 100Hz command rate
+        current_pose = self._limb.endpoint_pose()
+        ik_delta = Pose()
+        ik_delta.position.x = (current_pose['position'].x - pose.position.x) / steps
+        ik_delta.position.y = (current_pose['position'].y - pose.position.y) / steps
+        ik_delta.position.z = (current_pose['position'].z - pose.position.z) / steps
+        ik_delta.orientation.x = (current_pose['orientation'].x - pose.orientation.x) / steps
+        ik_delta.orientation.y = (current_pose['orientation'].y - pose.orientation.y) / steps
+        ik_delta.orientation.z = (current_pose['orientation'].z - pose.orientation.z) / steps
+        ik_delta.orientation.w = (current_pose['orientation'].w - pose.orientation.w) / steps
+        for d in range(int(steps), -1, -1):
+            if rospy.is_shutdown():
+                return
+            ik_step = Pose()
+            ik_step.position.x = d*ik_delta.position.x + pose.position.x
+            ik_step.position.y = d*ik_delta.position.y + pose.position.y
+            ik_step.position.z = d*ik_delta.position.z + pose.position.z
+            ik_step.orientation.x = d*ik_delta.orientation.x + pose.orientation.x
+            ik_step.orientation.y = d*ik_delta.orientation.y + pose.orientation.y
+            ik_step.orientation.z = d*ik_delta.orientation.z + pose.orientation.z
+            ik_step.orientation.w = d*ik_delta.orientation.w + pose.orientation.w
+            joint_angles = self._limb.ik_request(ik_step, self._tip_name)
+            if joint_angles:
+                self._limb.set_joint_positions(joint_angles)
+            else:
+                rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
+            r.sleep()
         rospy.sleep(1.0)
-        print("Running. Ctrl-c to quit")
-
-    def ik_request(self, pose):
-        hdr = Header(stamp=rospy.Time.now(), frame_id='base')
-        ikreq = SolvePositionIKRequest()
-        ikreq.pose_stamp.append(PoseStamped(header=hdr, pose=pose))
-        try:
-            resp = self._iksvc(ikreq)
-        except (rospy.ServiceException, rospy.ROSException), e:
-            rospy.logerr("Service call failed: %s" % (e,))
-            return False
-        # Check if result valid, and type of seed ultimately used to get solution
-        # convert rospy's string representation of uint8[]'s to int's
-        resp_seeds = struct.unpack('<%dB' % len(resp.result_type), resp.result_type)
-        limb_joints = {}
-        if (resp_seeds[0] != resp.RESULT_INVALID):
-            seed_str = {
-                        ikreq.SEED_USER: 'User Provided Seed',
-                        ikreq.SEED_CURRENT: 'Current Joint Angles',
-                        ikreq.SEED_NS_MAP: 'Nullspace Setpoints',
-                       }.get(resp_seeds[0], 'None')
-            if self._verbose:
-                print("IK Solution SUCCESS - Valid Joint Solution Found from Seed Type: {0}".format(
-                         (seed_str)))
-            # Format solution into Limb API-compatible dictionary
-            limb_joints = dict(zip(resp.joints[0].name, resp.joints[0].position))
-            if self._verbose:
-                print("IK Joint Solution:\n{0}".format(limb_joints))
-                print("------------------")
-        else:
-            rospy.logerr("INVALID POSE - No Valid Joint Solution Found.")
-            return False
-        return limb_joints
-
-    def _guarded_move_to_joint_position(self, joint_angles):
-        if joint_angles:
-            self._limb.move_to_joint_positions(joint_angles)
-        else:
-            rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
 
     def gripper_open(self):
         self._gripper.open()
@@ -133,22 +119,25 @@ class PushMass(object):
     def gripper_close(self):
         self._gripper.close()
         rospy.sleep(1.0)
-
+        
     def _approach(self, pose):
-        approach = copy.deepcopy(pose)
-        # approach with a pose the hover-distance above the requested pose
-        approach.position.y = approach.position.y + self._hover_distance
-        joint_angles = self.ik_request(approach)
-        self._guarded_move_to_joint_position(joint_angles)
+		app = copy.deepcopy(pose)
+		app.position.y = app.position.y + self._hover_distance
+		joint_angles = self._limb.ik_request(app, self._tip_name)
+		self._limb.set_joint_position_speed(0.001)
+		self._guarded_move_to_joint_position(joint_angles)
+		self._limb.set_joint_position_speed(0.1)
+		
         
     def _push(self, pose,rosbag_process):
-        approach = copy.deepcopy(pose)
-        # approach with a pose the hover-distance above the requested pose
-        approach.position.y = approach.position.y + -0.04
-        joint_angles = self.ik_request(approach)
-        self._guarded_move_to_joint_position(joint_angles)
-        stop_rosbag_recording(rosbag_process)
-        delete_gazebo_block()
+		app = copy.deepcopy(pose)
+		app.position.y = app.position.y - 0.04
+		joint_angles = self._limb.ik_request(app, self._tip_name)
+		self._limb.set_joint_position_speed(0.001)
+		self._guarded_move_to_joint_position(joint_angles)
+		self._limb.set_joint_position_speed(0.1)
+		stop_rosbag_recording(rosbag_process)
+		delete_gazebo_block()
             
     def _retract(self):
         # retrieve current pose from endpoint
@@ -161,13 +150,13 @@ class PushMass(object):
         ik_pose.orientation.y = current_pose['orientation'].y 
         ik_pose.orientation.z = current_pose['orientation'].z 
         ik_pose.orientation.w = current_pose['orientation'].w
-        joint_angles = self.ik_request(ik_pose)
+        joint_angles = self._limb.ik_request(ik_pose)
         # servo up from current pose
         self._guarded_move_to_joint_position(joint_angles)
 
     def _servo_to_pose(self, pose):
         # servo down to release
-        joint_angles = self.ik_request(pose)
+        joint_angles = self._limb.ik_request(pose)
         self._guarded_move_to_joint_position(joint_angles)
 
     def reach(self, pose, filename):
@@ -175,14 +164,12 @@ class PushMass(object):
         self.gripper_close()
         # servo above pose
         self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        #start to record
+		#start to record
         rosbag_process = start_rosbag_recording(filename)
         self._push(pose, rosbag_process)
     
       
-def load_gazebo_models(table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
+def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
                        table_reference_frame="world",
                        block_pose=Pose(position=Point(x=0.4225, y=0.1265, z=0.7725)),
                        block_reference_frame="world"):
@@ -313,13 +300,10 @@ def main():
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
 
-    # Wait for the All Clear from emulator startup
-    rospy.wait_for_message("/robot/sim/started", Empty)
-
     limb = 'right'
-    hover_distance = 0.15 # meters
+    hover_distance = 0.07 # meters
     # Starting Joint angles for left arm
-   starting_joint_angles = {'right_j0': -0.041662954890248294,
+    starting_joint_angles = {'right_j0': -0.041662954890248294,
                              'right_j1': -1.0258291091425074,
                              'right_j2': 0.0293680414401436,
                              'right_j3': 2.17518162913313,
@@ -328,7 +312,7 @@ def main():
                              'right_j6': 1.7659649178699421}
     pnp = PushMass(limb, hover_distance)
     # An orientation for gripper fingers to be overhead and parallel to the obj
-   overhead_orientation = Quaternion(
+    overhead_orientation = Quaternion(
                              x=-0.00142460053167,
                              y=0.999994209902,
                              z=-0.00177030764765,
@@ -340,12 +324,14 @@ def main():
     
     for x in range(0,num_of_run):
         if(not rospy.is_shutdown()):
-            pnp.reach(block_pose, filename)
-            pnp.move_to_start(starting_joint_angles)
-            load_gazebo_block(myargv[1])
+			pnp.reach(block_pose, filename)
+			pnp.move_to_start(starting_joint_angles)
+			load_gazebo_block(myargv[1])
             
         else:
             break
+    
+    
     
     pnp.move_to_start(starting_joint_angles)
     return 0
