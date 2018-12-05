@@ -6,6 +6,6 @@
     <arg name="electric_gripper" value="true"/>
   </include>
 
-  <!-- Start the Sawyer pick and place demo -->
+  <!-- Start the Sawyer shake_different_mass demo -->
   <node pkg="sawyer_tufts" type="shake_different_mass.py" name="shake_different_mass" args= "$(arg run_info)" />
 </launch>
