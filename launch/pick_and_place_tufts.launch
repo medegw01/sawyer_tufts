@@ -7,5 +7,5 @@
   </include>
 
   <!-- Start the Sawyer pick and place demo -->
-  <node pkg="sawyer_tufts" type="pick_and_place_tufts.py" name="pick_and_place_tufts" args= "$(arg run_info)" />
+  <node pkg="sawyer_tufts" type="pick_and_place_tufts.py" name="pick_and_place_tufts" args= "$(arg num_of_run)" />
 </launch>

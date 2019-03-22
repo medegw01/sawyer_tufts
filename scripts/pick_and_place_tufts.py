@@ -23,7 +23,9 @@ import sys
 import copy
 import os
 import rospy
+import random
 import rospkg
+import time
 import subprocess, signal
 
 from gazebo_msgs.srv import (
@@ -52,13 +54,13 @@ class PickAndPlace(object):
         self._init_state = self._rs.state().enabled
         print("Enabling robot... ")
         self._rs.enable()
-
+    
     def move_to_start(self, start_angles=None):
-        print("Moving the {0} arm to start pose...".format(self._limb_name))
-        if not start_angles:
-            start_angles = dict(zip(self._joint_names, [0]*7))
-        self._guarded_move_to_joint_position(start_angles)
-        self.gripper_open()
+		print("Moving the {0} arm to start pose...".format(self._limb_name))
+		if not start_angles:
+			start_angles = dict(zip(self._joint_names, [0]*7))
+		self._guarded_move_to_joint_position(start_angles)
+		self.gripper_open()
 
     def _guarded_move_to_joint_position(self, joint_angles, timeout=5.0):
         if rospy.is_shutdown():
@@ -130,29 +132,27 @@ class PickAndPlace(object):
         rospy.sleep(1.0)
 
     def pick(self, pose, filename):
-        # open the gripper
-        self.gripper_open()
-        # servo above pose
-        self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        # close gripper
-        self.gripper_close()
-        #start to record
-        rosbag_process = start_rosbag_recording(filename)
-        self._approach(pose)
-        return rosbag_process
+		fn = "sawyer_grasp_model_" + filename
+		filename = "sawyer_pick_model_" + filename
+		rps = start_rosbag_recording(fn)
+		self.gripper_open()
+		self._approach(pose)
+		self._servo_to_pose(pose)
+		self.gripper_close()
+		stop_rosbag_recording(rps)
+		rosbag_process = start_rosbag_recording(filename)
+		self._approach(pose)
+		stop_rosbag_recording(rosbag_process)
+ 
     
-    def place(self, pose, rosbag_process):
-        # servo above pose
-        self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        # open the gripper
-        self.gripper_open()
-        # stop rosbag recording
-        stop_rosbag_recording(rosbag_process)
-        self._approach(pose)
+    def place(self, pose, filename):
+		filename = "sawyer_place_model_" + filename
+		rosbag_process = start_rosbag_recording(filename)
+		self._approach(pose)
+		self._servo_to_pose(pose)
+		self.gripper_open()
+		stop_rosbag_recording(rosbag_process)
+		self._approach(pose)
 
 def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
                        table_reference_frame="world",
@@ -215,6 +215,7 @@ def load_gazebo_block(box_no = 4, block_pose=Pose(position=Point(x=0.4225, y=0.1
   
     # Spawn Block URDF
     rospy.wait_for_service('/gazebo/spawn_urdf_model')
+   
     try:
         spawn_urdf = rospy.ServiceProxy('/gazebo/spawn_urdf_model', SpawnModel)
         resp_urdf = spawn_urdf("block", block_xml, "/",
@@ -239,7 +240,6 @@ def start_rosbag_recording(filename):
     rospy.loginfo(rospy.get_name() + ' start')
     script_path = os.path.dirname(os.path.abspath(__file__))
     rosbagfile_dir = script_path[:-8]+"/rosbagfiles/"
-    
     #  modify the rosbag process with prof Jivko
     rosbag_process = subprocess.Popen('rosbag record -o {} /robot/joint_states'.format(filename), stdin=subprocess.PIPE, shell=True, cwd= rosbagfile_dir)
     return rosbag_process
@@ -253,9 +253,15 @@ def stop_rosbag_recording(p):
     for sub_process in process.children(recursive=True):
         sub_process.send_signal(signal.SIGINT)
     p.wait()  # we wait for children to terminate
-    
     rospy.loginfo("I'm done")
-    
+def addnoise_pose(overhead_orientation):
+	pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
+	x = random.uniform(-0.09, 0.09)
+	y = random.uniform(-0.09, 0.09)
+	pose.position.x = pose.position.x + x
+	pose.position.y = pose.position.y + y
+	return pose
+	   
 def main():
     """SDK Inverse Kinematics Pick and Place Example
 
@@ -274,8 +280,7 @@ def main():
     
     #parse argument
     myargv = rospy.myargv(argv=sys.argv)
-    filename = "sawyer_pick_and_place__model"+ str(myargv[1])+"_"
-    num_of_run = int(myargv[2])
+    num_of_run = int(myargv[1])
     
     # Load Gazebo Models via Spawning Services
     # Note that the models reference is the /world frame
@@ -300,24 +305,27 @@ def main():
                              z=-0.00177030764765,
                              w=0.00253311793936)
   
-    block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
+    block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.145), orientation=overhead_orientation)
   
     pnp.move_to_start(starting_joint_angles)
-    
-    load_gazebo_models(myargv[1])
+    filename = str(0)
+    load_gazebo_models(filename)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
-    for x in range(0,num_of_run):
-        if(not rospy.is_shutdown()):
-           rosbag_process =  pnp.pick(block_pose, filename)
-           pnp.place(block_pose, rosbag_process)
-           pnp.gripper_open()
-           pnp.move_to_start(starting_joint_angles)
-           delete_gazebo_block()
-           load_gazebo_block(myargv[1])
-        else:
-            break
+    for x in range(0,12):
+		filename = str(x)
+		for y in range(0,num_of_run):
+			if(not rospy.is_shutdown()):
+				pnp.pick(block_pose, filename)
+				tmp = addnoise_pose(overhead_orientation)
+				pnp.place(tmp, filename)
+				pnp.gripper_open()
+				pnp.move_to_start(starting_joint_angles)
+				delete_gazebo_block()
+				load_gazebo_block(filename)
+			else:
+				break
    
     return 0
 

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Sawyer SDK Inverse Kinematics Pick and Place Demo
+Sawyer SDK Inverse Kinematics
 """
 import argparse
 import struct
@@ -45,195 +45,190 @@ from geometry_msgs.msg import (
 
 import intera_interface
 
+from intera_interface import CHECK_VERSION
+
 class Wobbler(object):
-    def __init__(self, limb="right", hover_distance = 0.15, tip_name="right_gripper_tip"):
-        self._limb_name = limb # string
-        self._tip_name = tip_name # string
-        self._hover_distance = hover_distance # in meters
-        #self._limb = intera_interface.Limb(limb)
+     
+     def __init__(self):
+        """
+        'Wobbles' both arms by commanding joint velocities sinusoidally.
+        """
+        self._pub_rate = rospy.Publisher('robot/joint_state_publish_rate',
+                                         UInt16, queue_size=10)
+        self._right_arm = intera_interface.limb.Limb("right")
         self._gripper = intera_interface.Gripper()
-        # verify robot is enabled
+        self._tip_name = "right_gripper_tip"
+        self._right_joint_names = self._right_arm.joint_names()
+        # control parameters
+        self._rate = 500.0  # Hz
         print("Getting robot state... ")
-        self._rs = intera_interface.RobotEnable(intera_interface.CHECK_VERSION)
+        self._rs = intera_interface.RobotEnable(CHECK_VERSION)
         self._init_state = self._rs.state().enabled
         print("Enabling robot... ")
         self._rs.enable()
-        self._pub_rate = rospy.Publisher('robot/joint_state_publish_rate',
-                                         UInt16, queue_size=10)
-        
-        self._verbose = True
-        self._right_arm = intera_interface.limb.Limb(limb)
-        self._right_joint_names = self._right_arm.joint_names()
-       
-        
-
-        # control parameters
-        self._rate = 500.0  # Hz
-        
         # set joint state publishing to 500Hz
         self._pub_rate.publish(self._rate)
+            
+     def move_to_start(self, start_angles=None):
+		 print("Moving the {0} arm to start pose...right limb")
+		 if not start_angles:
+			 start_angles = dict(zip(self._joint_names, [0]*7))
+		 self._guarded_move_to_joint_position(start_angles)
+		 self.gripper_open()
 
-    def move_to_start(self, start_angles=None):
-        print("Moving the {0} arm to start pose...".format(self._limb_name))
-        if not start_angles:
-            start_angles = dict(zip(self._joint_names, [0]*7))
-        self._guarded_move_to_joint_position(start_angles)
-        self.gripper_open()
+     def _guarded_move_to_joint_position(self, joint_angles, timeout=5.0):
+		if rospy.is_shutdown():
+			return
+		if joint_angles:
+			self._right_arm.move_to_joint_positions(joint_angles,timeout=timeout)
+		else:
+			rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
+			
+     def gripper_open(self):
+		self._gripper.open()
+		rospy.sleep(1.0)
 
-    def _guarded_move_to_joint_position(self, joint_angles, timeout=5.0):
-        if rospy.is_shutdown():
-            return
-        if joint_angles:
-            self._right_arm.move_to_joint_positions(joint_angles,timeout=timeout)
-        else:
-            rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
+     def gripper_close(self):
+		self._gripper.close()
+		rospy.sleep(1.0)
 
-    def gripper_open(self):
-        self._gripper.open()
-        rospy.sleep(1.0)
-
-    def gripper_close(self):
-        self._gripper.close()
-        rospy.sleep(1.0)
-
-    def _approach(self, pose):
-        approach = copy.deepcopy(pose)
-        # approach with a pose the hover-distance above the requested pose
-        approach.position.z = approach.position.z + self._hover_distance
-        joint_angles = self._right_arm.ik_request(approach, self._tip_name)
-        self._right_arm.set_joint_position_speed(0.001)
-        self._guarded_move_to_joint_position(joint_angles)
-        self._right_arm.set_joint_position_speed(0.1)
+     def _approach(self, pose):
+		approach = copy.deepcopy(pose)
+		# approach with a pose the hover-distance above the requested pose
+		approach.position.z = approach.position.z + 0.07
+		joint_angles = self._right_arm.ik_request(approach, self._tip_name)
+		self._right_arm.set_joint_position_speed(0.001)
+		self._guarded_move_to_joint_position(joint_angles)
+		self._right_arm.set_joint_position_speed(0.1)
 
    
+     def _servo_to_pose(self, pose, time=4.0, steps=400.0):
+		''' An *incredibly simple* linearly-interpolated Cartesian move '''
+		r = rospy.Rate(1/(time/steps)) # Defaults to 100Hz command rate
+		current_pose = self._right_arm.endpoint_pose()
+		ik_delta = Pose()
+		ik_delta.position.x = (current_pose['position'].x - pose.position.x) / steps
+		ik_delta.position.y = (current_pose['position'].y - pose.position.y) / steps
+		ik_delta.position.z = (current_pose['position'].z - pose.position.z) / steps
+		ik_delta.orientation.x = (current_pose['orientation'].x - pose.orientation.x) / steps
+		ik_delta.orientation.y = (current_pose['orientation'].y - pose.orientation.y) / steps
+		ik_delta.orientation.z = (current_pose['orientation'].z - pose.orientation.z) / steps
+		ik_delta.orientation.w = (current_pose['orientation'].w - pose.orientation.w) / steps
+		
+		for d in range(int(steps), -1, -1):
+			if rospy.is_shutdown():
+				return
+			ik_step = Pose()
+			ik_step.position.x = d*ik_delta.position.x + pose.position.x
+			ik_step.position.y = d*ik_delta.position.y + pose.position.y
+			ik_step.position.z = d*ik_delta.position.z + pose.position.z
+			ik_step.orientation.x = d*ik_delta.orientation.x + pose.orientation.x
+			ik_step.orientation.y = d*ik_delta.orientation.y + pose.orientation.y
+			ik_step.orientation.z = d*ik_delta.orientation.z + pose.orientation.z
+			ik_step.orientation.w = d*ik_delta.orientation.w + pose.orientation.w
+			joint_angles = self._right_arm.ik_request(ik_step, self._tip_name)
+			if joint_angles:
+				self._right_arm.set_joint_positions(joint_angles)
+			else:
+				rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
+			r.sleep()
+		rospy.sleep(1.0)
 
-    def _servo_to_pose(self, pose, time=4.0, steps=400.0):
-        ''' An *incredibly simple* linearly-interpolated Cartesian move '''
-        r = rospy.Rate(1/(time/steps)) # Defaults to 100Hz command rate
-        current_pose = self._right_arm.endpoint_pose()
-        ik_delta = Pose()
-        ik_delta.position.x = (current_pose['position'].x - pose.position.x) / steps
-        ik_delta.position.y = (current_pose['position'].y - pose.position.y) / steps
-        ik_delta.position.z = (current_pose['position'].z - pose.position.z) / steps
-        ik_delta.orientation.x = (current_pose['orientation'].x - pose.orientation.x) / steps
-        ik_delta.orientation.y = (current_pose['orientation'].y - pose.orientation.y) / steps
-        ik_delta.orientation.z = (current_pose['orientation'].z - pose.orientation.z) / steps
-        ik_delta.orientation.w = (current_pose['orientation'].w - pose.orientation.w) / steps
-        for d in range(int(steps), -1, -1):
-            if rospy.is_shutdown():
-                return
-            ik_step = Pose()
-            ik_step.position.x = d*ik_delta.position.x + pose.position.x
-            ik_step.position.y = d*ik_delta.position.y + pose.position.y
-            ik_step.position.z = d*ik_delta.position.z + pose.position.z
-            ik_step.orientation.x = d*ik_delta.orientation.x + pose.orientation.x
-            ik_step.orientation.y = d*ik_delta.orientation.y + pose.orientation.y
-            ik_step.orientation.z = d*ik_delta.orientation.z + pose.orientation.z
-            ik_step.orientation.w = d*ik_delta.orientation.w + pose.orientation.w
-            joint_angles = self._right_arm.ik_request(ik_step, self._tip_name)
-            if joint_angles:
-                self._right_arm.set_joint_positions(joint_angles)
-            else:
-                rospy.logerr("No Joint Angles provided for move_to_joint_positions. Staying put.")
-            r.sleep()
-        rospy.sleep(1.0)
-
-    def pick(self, pose, filename):
-        # open the gripper
-        self.gripper_open()
-        # servo above pose
-        self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        # close gripper
-        self.gripper_close()
-        #start to record
-        rosbag_process = start_rosbag_recording(filename)
-        self._approach(pose)
-        return rosbag_process
+     def pick(self, pose, filename):
+		# open the gripper
+		self.gripper_open()
+		# servo above pose
+		self._approach(pose)
+		# servo to pose
+		self._servo_to_pose(pose)
+		# close gripper
+		self.gripper_close()
+		#start to record
+		rosbag_process = start_rosbag_recording(filename)
+		self._approach(pose)
+		return rosbag_process
     
-    def place(self, pose, rosbag_process):
+     def place(self, pose, rosbag_process):
         # servo above pose
-        self._approach(pose)
-        # servo to pose
-        self._servo_to_pose(pose)
-        # open the gripper
-        self.gripper_open()
-        # stop rosbag recording
-        stop_rosbag_recording(rosbag_process)
-        self._approach(pose)
-    def _reset_control_modes(self):
-        rate = rospy.Rate(self._rate)
-        for _ in xrange(100):
-            if rospy.is_shutdown():
-                return False
-            self._right_arm.exit_control_mode()
-            self._pub_rate.publish(100)  # 100Hz default joint state rate
-            rate.sleep()
-        return True
+		self._approach(pose)
+		# servo to pose
+		self._servo_to_pose(pose)
+		# open the gripper
+		self.gripper_open()
+		# stop rosbag recording
+		stop_rosbag_recording(rosbag_process)
+		self._approach(pose)
+    
+     def _reset_control_modes(self):
+		rate = rospy.Rate(self._rate)
+		for _ in xrange(100):
+			if rospy.is_shutdown():
+				return False
+			self._right_arm.exit_control_mode()
+			self._pub_rate.publish(100)  # 100Hz default joint state rate
+			rate.sleep()
+		return True
 
-    def set_neutral(self):
-        """
-        Sets both arms back into a neutral pose.
-        """
-        print("Moving to neutral pose...")
-        self._right_arm.move_to_neutral()
+     def set_neutral(self):
+		"""
+		Sets both arms back into a neutral pose.
+		"""
+		print("Moving to neutral pose...")
+		self._right_arm.move_to_neutral()
 
-    def clean_shutdown(self):
-        print("\nExiting example...")
-        #return to normal
-        self._reset_control_modes()
-        self.set_neutral()
-        if not self._init_state:
-            print("Disabling robot...")
-            self._rs.disable()
-        return True
+     def clean_shutdown(self):
+		print("\nExiting example...")
+		#return to normal
+		self._reset_control_modes()
+		self.set_neutral()
+		if not self._init_state:
+			print("Disabling robot...")
+			self._rs.disable()
+		return True
 
-    def wobble(self, rosbag_process, pose):
-        self.set_neutral()
-        """
-        Performs the wobbling of both arms.
-        """
-        rate = rospy.Rate(self._rate)
-        start = rospy.Time.now()
-
-        def make_v_func():
-            """
-            returns a randomly parameterized cosine function to control a
-            specific joint.
-            """
-            period_factor = 0.5#random.uniform(0.3, 0.5)
-            amplitude_factor = 0.45#random.uniform(0.1, 0.2)
-
-            def v_func(elapsed):
-                w = period_factor * elapsed.to_sec()
-                return amplitude_factor * math.cos(w * 2 * math.pi)
-            return v_func
-
-        v_funcs = [make_v_func() for _ in self._right_joint_names]
-
-        def make_cmd(joint_names, elapsed):
-            return dict([(joint, v_funcs[i](elapsed))
+     def wobble(self, rosbag_process, pose):
+		self.set_neutral()
+		"""
+		Performs the wobbling of both arms.
+		"""
+		rate = rospy.Rate(self._rate)
+		start = rospy.Time.now()
+		
+		def make_v_func():
+			"""
+			returns a randomly parameterized cosine function to control a
+			specific joint.
+			"""
+			period_factor = 0.4#random.uniform(0.3, 0.5)
+			amplitude_factor = 0.15#random.uniform(0.1, 0.2)
+			
+			def v_func(elapsed):
+				w = period_factor * elapsed.to_sec()
+				return amplitude_factor * math.cos(w * 2 * math.pi)
+			return v_func
+			
+		v_funcs = [make_v_func() for _ in self._right_joint_names]
+		
+		def make_cmd(joint_names, elapsed):
+			return dict([(joint, v_funcs[i](elapsed))
                          for i, joint in enumerate(joint_names)])
-
-        print("Wobbling. Press Ctrl-C to stop...")
-        num_= 5000;
-        while (num_>0):
-            self._pub_rate.publish(self._rate)
-            elapsed = rospy.Time.now() - start
-            cmd = make_cmd(self._right_joint_names, elapsed)
-            num_= num_-1
-            cmd['right_w0'] = 0.0
-            cmd['right_e0'] = 0.0
-            cmd['right_s0'] = 0.0
-            
-            print(cmd)
-            
-            self._right_arm.set_joint_velocities(cmd)
-            
-            
-            rate.sleep()
-        self.place(pose, rosbag_process)
+		
+		
+		print("Wobbling. Press Ctrl-C to stop...")
+		num_= 5000
+		while (num_>0):
+			self._pub_rate.publish(self._rate)
+			elapsed = rospy.Time.now() - start
+			cmd = make_cmd(self._right_joint_names, elapsed)
+			num_= num_-1
+			cmd['right_w0'] = 0.0
+			cmd['right_e0'] = 0.0
+			cmd['right_s0'] = 0.0
+			print(cmd)
+			self._right_arm.set_joint_velocities(cmd)
+			rate.sleep()
+			
+		self.place(pose, rosbag_process)
 
 def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
                        table_reference_frame="world",
@@ -374,10 +369,12 @@ def main():
   
     block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
   
-    wobbler = Wobbler(limb, hover_distance)
+    wobbler = Wobbler()
+    rospy.on_shutdown(wobbler.clean_shutdown)
     
     for x in range(0,num_of_run):
         if(not rospy.is_shutdown()):
+			print(".........................")
 			wobbler.move_to_start(starting_joint_angles)
 			rosbag_process =  wobbler.pick(block_pose, filename)
 			rospy.on_shutdown(wobbler.clean_shutdown)
@@ -388,7 +385,8 @@ def main():
             
         else:
             break
-    
+          
+    wobbler.wobble()    
     print("Done.")
 
     return 0
