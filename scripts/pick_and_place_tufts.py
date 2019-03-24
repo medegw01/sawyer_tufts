@@ -135,14 +135,14 @@ class PickAndPlace(object):
 		fn = "sawyer_grasp_model_" + filename
 		filename = "sawyer_pick_model_" + filename
 		rps = start_rosbag_recording(fn)
-		rospy.sleep(0.5)
+		time.sleep(0.5)
 		self.gripper_open()
 		self._approach(pose)
 		self._servo_to_pose(pose)
 		self.gripper_close()
 		stop_rosbag_recording(rps)
 		rosbag_process = start_rosbag_recording(filename)
-		rospy.sleep(0.5)
+		time.sleep(0.5)
 		self._approach(pose)
 		stop_rosbag_recording(rosbag_process)
  
