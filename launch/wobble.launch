@@ -7,5 +7,5 @@
   </include>
 
   <!-- Start the wobbler demo -->
-  <node pkg="sawyer_tufts" type="wobble.py" name="wobble" args= "$(arg run_info)" />
+  <node pkg="sawyer_tufts" type="wobble.py" name="wobble" args= "$(arg num_of_run)" />
 </launch>

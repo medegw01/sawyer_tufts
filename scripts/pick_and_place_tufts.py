@@ -311,7 +311,7 @@ def main():
   
     pnp.move_to_start(starting_joint_angles)
     filename = str(0)
-    load_gazebo_models(filename)
+    load_gazebo_models(0)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
@@ -325,7 +325,7 @@ def main():
 				pnp.gripper_open()
 				pnp.move_to_start(starting_joint_angles)
 				delete_gazebo_block()
-				load_gazebo_block(filename)
+				load_gazebo_block(x)
 			else:
 				break
    

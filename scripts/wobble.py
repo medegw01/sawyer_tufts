@@ -59,13 +59,16 @@ class Wobbler(object):
         self._gripper = intera_interface.Gripper()
         self._tip_name = "right_gripper_tip"
         self._right_joint_names = self._right_arm.joint_names()
+        
         # control parameters
         self._rate = 500.0  # Hz
+        
         print("Getting robot state... ")
         self._rs = intera_interface.RobotEnable(CHECK_VERSION)
         self._init_state = self._rs.state().enabled
         print("Enabling robot... ")
         self._rs.enable()
+       
         # set joint state publishing to 500Hz
         self._pub_rate.publish(self._rate)
             
@@ -134,7 +137,7 @@ class Wobbler(object):
 			r.sleep()
 		rospy.sleep(1.0)
 
-     def pick(self, pose, filename):
+     def pick(self, pose):
 		# open the gripper
 		self.gripper_open()
 		# servo above pose
@@ -144,11 +147,11 @@ class Wobbler(object):
 		# close gripper
 		self.gripper_close()
 		#start to record
-		rosbag_process = start_rosbag_recording(filename)
+		#rosbag_process = start_rosbag_recording(filename)
 		self._approach(pose)
-		return rosbag_process
+		#return rosbag_process
     
-     def place(self, pose, rosbag_process):
+     def place(self, pose):
         # servo above pose
 		self._approach(pose)
 		# servo to pose
@@ -156,7 +159,7 @@ class Wobbler(object):
 		# open the gripper
 		self.gripper_open()
 		# stop rosbag recording
-		stop_rosbag_recording(rosbag_process)
+		#stop_rosbag_recording(rosbag_process)
 		self._approach(pose)
     
      def _reset_control_modes(self):
@@ -185,50 +188,45 @@ class Wobbler(object):
 			print("Disabling robot...")
 			self._rs.disable()
 		return True
+    
+     def wobble(self):
+        self.set_neutral()
+        """
+        Performs the wobbling of both arms.
+        """
+        rate = rospy.Rate(self._rate)
+        start = rospy.Time.now()
 
-     def wobble(self, rosbag_process, pose):
-		self.set_neutral()
-		"""
-		Performs the wobbling of both arms.
-		"""
-		rate = rospy.Rate(self._rate)
-		start = rospy.Time.now()
-		
-		def make_v_func():
-			"""
-			returns a randomly parameterized cosine function to control a
-			specific joint.
-			"""
-			period_factor = 0.4#random.uniform(0.3, 0.5)
-			amplitude_factor = 0.15#random.uniform(0.1, 0.2)
-			
-			def v_func(elapsed):
-				w = period_factor * elapsed.to_sec()
-				return amplitude_factor * math.cos(w * 2 * math.pi)
-			return v_func
-			
-		v_funcs = [make_v_func() for _ in self._right_joint_names]
-		
-		def make_cmd(joint_names, elapsed):
-			return dict([(joint, v_funcs[i](elapsed))
+        def make_v_func():
+            """
+            returns a randomly parameterized cosine function to control a
+            specific joint.
+            """
+            period_factor = random.uniform(0.3, 0.5)
+            amplitude_factor = 0.1#random.uniform(0.1, 0.2)
+
+            def v_func(elapsed):
+                w = period_factor * elapsed.to_sec()
+                return amplitude_factor * math.cos(w * 2 * math.pi)
+            return v_func
+
+        v_funcs = [make_v_func() for _ in self._right_joint_names]
+
+        def make_cmd(joint_names, elapsed):
+            return dict([(joint, v_funcs[i](elapsed))
                          for i, joint in enumerate(joint_names)])
-		
-		
-		print("Wobbling. Press Ctrl-C to stop...")
-		num_= 5000
-		while (num_>0):
-			self._pub_rate.publish(self._rate)
-			elapsed = rospy.Time.now() - start
-			cmd = make_cmd(self._right_joint_names, elapsed)
-			num_= num_-1
-			cmd['right_w0'] = 0.0
-			cmd['right_e0'] = 0.0
-			cmd['right_s0'] = 0.0
-			print(cmd)
-			self._right_arm.set_joint_velocities(cmd)
-			rate.sleep()
+
+        print("Wobbling. Press Ctrl-C to stop...")
+        n = 5000
+        while n>0:
+            self._pub_rate.publish(self._rate)
+            elapsed = rospy.Time.now() - start
+            cmd = make_cmd(self._right_joint_names, elapsed)
+            self._right_arm.set_joint_velocities(cmd)
+            n = n-1
+            rate.sleep()
 			
-		self.place(pose, rosbag_process)
+		
 
 def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
                        table_reference_frame="world",
@@ -339,13 +337,13 @@ def main():
     #parse argument
     myargv = rospy.myargv(argv=sys.argv)
     filename = "sawyer_wobbler__model"+ str(myargv[1])+"_"
-    num_of_run = int(myargv[2])
+    num_of_run = int(myargv[1])
     
     # Load Gazebo Models via Spawning Services
     # Note that the models reference is the /world frame
     # and the IK operates with respect to the /base frame
     
-    load_gazebo_models(myargv[1])
+    load_gazebo_models(0)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
@@ -367,7 +365,7 @@ def main():
                              z=-0.00177030764765,
                              w=0.00253311793936)
   
-    block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
+    block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.145), orientation=overhead_orientation)
   
     wobbler = Wobbler()
     rospy.on_shutdown(wobbler.clean_shutdown)
@@ -375,18 +373,17 @@ def main():
     for x in range(0,num_of_run):
         if(not rospy.is_shutdown()):
 			print(".........................")
-			wobbler.move_to_start(starting_joint_angles)
-			rosbag_process =  wobbler.pick(block_pose, filename)
+			#wobbler.move_to_start(starting_joint_angles)
+			wobbler.pick(block_pose)
 			rospy.on_shutdown(wobbler.clean_shutdown)
-			wobbler.wobble(rosbag_process, block_pose)
-			wobbler.move_to_start(starting_joint_angles)
+			wobbler.wobble()
+			wobbler.place(block_pose)
+			#wobbler.move_to_start(starting_joint_angles)
 			delete_gazebo_block()
-			load_gazebo_block(myargv[1])
-            
+			load_gazebo_block(0)
         else:
-            break
-          
-    wobbler.wobble()    
+			break
+            
     print("Done.")
 
     return 0
