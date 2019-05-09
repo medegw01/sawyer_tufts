@@ -23,6 +23,7 @@ import sys
 import copy
 import os
 import math
+import time
 import random
 import rospy
 import rospkg
@@ -189,8 +190,14 @@ class Wobbler(object):
 			self._rs.disable()
 		return True
     
-     def wobble(self):
+     def wobble(self,nm):
+        
+        fn2 = "sawyer_hold_model_" + str(nm)
         self.set_neutral()
+        rp = start_rosbag_recording(fn2)
+        time.sleep(5.0)
+        stop_rosbag_recording(rp)
+        
         """
         Performs the wobbling of both arms.
         """
@@ -216,8 +223,10 @@ class Wobbler(object):
             return dict([(joint, v_funcs[i](elapsed))
                          for i, joint in enumerate(joint_names)])
 
-        print("Wobbling. Press Ctrl-C to stop...")
+        print("started shaking block....." + str(nm))
         n = 5000
+        fn1 = "sawyer_shake_model_" + str(nm)
+        rosbag_process = start_rosbag_recording(fn1)
         while n>0:
             self._pub_rate.publish(self._rate)
             elapsed = rospy.Time.now() - start
@@ -225,7 +234,9 @@ class Wobbler(object):
             self._right_arm.set_joint_velocities(cmd)
             n = n-1
             rate.sleep()
-			
+            
+        print("done shaking block....." + str(nm))
+        stop_rosbag_recording(rosbag_process)	
 		
 
 def load_gazebo_models(box_no = 4, table_pose=Pose(position=Point(x=0.75, y=0.0, z=0.0)),
@@ -343,7 +354,7 @@ def main():
     # Note that the models reference is the /world frame
     # and the IK operates with respect to the /base frame
     
-    load_gazebo_models(0)
+    load_gazebo_models(7)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
@@ -370,19 +381,19 @@ def main():
     wobbler = Wobbler()
     rospy.on_shutdown(wobbler.clean_shutdown)
     
-    for x in range(0,num_of_run):
-        if(not rospy.is_shutdown()):
-			print(".........................")
-			#wobbler.move_to_start(starting_joint_angles)
-			wobbler.pick(block_pose)
-			rospy.on_shutdown(wobbler.clean_shutdown)
-			wobbler.wobble()
-			wobbler.place(block_pose)
-			#wobbler.move_to_start(starting_joint_angles)
-			delete_gazebo_block()
-			load_gazebo_block(0)
-        else:
-			break
+    for y in range(7,19):
+		for x in range(0,num_of_run):
+			if(not rospy.is_shutdown()):
+				wobbler.move_to_start(starting_joint_angles)
+				wobbler.pick(block_pose)
+				rospy.on_shutdown(wobbler.clean_shutdown)
+				wobbler.wobble(y)
+				wobbler.place(block_pose)
+				wobbler.move_to_start(starting_joint_angles)
+				delete_gazebo_block()
+				load_gazebo_block(y)
+			else:
+			   break
             
     print("Done.")
 

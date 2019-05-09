@@ -40,6 +40,9 @@ from geometry_msgs.msg import (
 )
 
 import intera_interface
+# add noise here
+x_noise_endpoint = 0.09  # must be positive number
+y_noise_endpoint = 0.09  # must be positive number
 
 class PickAndPlace(object):
     def __init__(self, limb="right", hover_distance = 0.15, tip_name="right_gripper_tip"):
@@ -258,8 +261,8 @@ def stop_rosbag_recording(p):
     rospy.loginfo("I'm done")
 def addnoise_pose(overhead_orientation):
 	pose = Pose(position= Point(x=0.45, y=0.155, z=-0.129), orientation=overhead_orientation)
-	x = random.uniform(-0.09, 0.09)
-	y = random.uniform(-0.09, 0.09)
+	x = random.uniform(-1*x_noise_endpoint, x_noise_endpoint)
+	y = random.uniform(-1*y_noise_endpoint, y_noise_endpoint)
 	pose.position.x = pose.position.x + x
 	pose.position.y = pose.position.y + y
 	return pose
