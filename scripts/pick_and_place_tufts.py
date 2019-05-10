@@ -313,13 +313,13 @@ def main():
     block_pose = Pose(position= Point(x=0.45, y=0.155, z=-0.145), orientation=overhead_orientation)
   
     pnp.move_to_start(starting_joint_angles)
-    filename = str(0)
-    load_gazebo_models(0)
+    filename = str(7)
+    load_gazebo_models(7)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
-    for x in range(0,12):
-		filename = str(x)
+    for x in range(7,19):
+		filename = str(x-7)
 		for y in range(0,num_of_run):
 			if(not rospy.is_shutdown()):
 				pnp.pick(block_pose, filename)
