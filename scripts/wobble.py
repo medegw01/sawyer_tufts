@@ -354,7 +354,7 @@ def main():
     # Note that the models reference is the /world frame
     # and the IK operates with respect to the /base frame
     
-    load_gazebo_models(7)
+    load_gazebo_models(1)
     # Remove models from the scene on shutdown
     rospy.on_shutdown(delete_gazebo_models)
     
@@ -381,8 +381,8 @@ def main():
     wobbler = Wobbler()
     rospy.on_shutdown(wobbler.clean_shutdown)
     
-    for y in range(7,19):
-		for x in range(0,num_of_run):
+    for y in range(1, 25+1):
+		for x in range(0, num_of_run):
 			if(not rospy.is_shutdown()):
 				wobbler.move_to_start(starting_joint_angles)
 				wobbler.pick(block_pose)
