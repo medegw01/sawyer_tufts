@@ -28,4 +28,9 @@ where:
 - num_of_run                  -> number of desired time the robot should pick block. Number should be greater than
 
 ## Video demo:
+
+### Grasp, Pick, Hold, Shake and Place:
+
+<img src="pics/Sawyer_pick_and_place_shake.gif" alt="drawing" width="600px"/>
+
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/FynCZzQ-ldQ/0.jpg)](https://www.youtube.com/watch?v=FynCZzQ-ldQ)
