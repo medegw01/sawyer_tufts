@@ -27,10 +27,10 @@ where:
 - pick_and_place_tufts.launch -> the launch file for the gazebo world and the demo python script
 - num_of_run                  -> number of desired time the robot should pick block. Number should be greater than
 
-## Video demo:
+## Demos:
 
-### Grasp, Pick, Hold, Shake and Place:
-
+### Grasp, Pick, Hold, Shake and Place(Gif):
 <img src="pics/Sawyer_pick_and_place_shake.gif" alt="drawing" width="600px"/>
 
+### Pick and Place(Full Video):
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/FynCZzQ-ldQ/0.jpg)](https://www.youtube.com/watch?v=FynCZzQ-ldQ)
